@@ -1,7 +1,10 @@
+import java.io.*;
+import java.nio.file.Files;
+import java.nio.file.*;
+
 class DataLogger {
     //variables for writing EEG data out to a file
     private DataWriterODF fileWriterODF;
-    private DataWriterAuxODF fileWriterAuxODF;
     private DataWriterBDF fileWriterBDF;
     public DataWriterBF fileWriterBF; //Add the ability to simulataneously save to BrainFlow CSV, independent of BDF or ODF
     private String sessionName = "N/A";
@@ -43,8 +46,6 @@ class DataLogger {
         switch (outputDataSource) {
             case OUTPUT_SOURCE_ODF:
                 fileWriterODF.append(newData);
-                if (currentBoard instanceof AuxDataBoard)
-                    fileWriterAuxODF.append(((AuxDataBoard)currentBoard).getAuxFrameData());
                 break;
             case OUTPUT_SOURCE_BDF:
                 fileWriterBDF.writeRawData_dataPacket(newData);
@@ -86,6 +87,31 @@ class DataLogger {
     public void onStopStreaming() {
         //Close the log file when using OpenBCI Data Format (.txt)
         if (outputDataSource == OUTPUT_SOURCE_ODF) closeLogFile();
+        
+        String start_location_str = directoryManager.getRecordingsPath();
+        String end_location_str = "W:\\";
+        
+        File starting_dir_as_file = new File(start_location_str);
+        String[] files_to_move_fnames = starting_dir_as_file.list();
+        
+        for(int i=0; i < files_to_move_fnames.length; i++){
+          Path file_to_move_path = Paths.get(start_location_str, files_to_move_fnames[i]);
+          Path target_path = Paths.get(end_location_str, files_to_move_fnames[i]);
+          System.out.println(file_to_move_path.toString());
+          System.out.println(target_path.toString());
+          try {
+            Files.move(file_to_move_path, target_path, StandardCopyOption.REPLACE_EXISTING);
+            output("Files successfully moved from " + file_to_move_path.toString() + " to " +  target_path.toString());
+          } catch(Exception e){
+            outputError("File transfer from "  + file_to_move_path.toString() + " to " + target_path.toString() +" failed.");
+            System.out.println(
+              "!! Failed to transfer file from " + 
+              file_to_move_path.toString() + 
+              " to " + 
+              target_path.toString() + " failed");
+            e.printStackTrace();
+          }
+        }
     }
 
     public float getSecondsWritten() {
@@ -146,11 +172,6 @@ class DataLogger {
         }
         //open the new file
         fileWriterODF = new DataWriterODF(sessionName, _fileName);
-        if (currentBoard instanceof AuxDataBoard) {
-            if (fileWriterAuxODF != null)
-                fileWriterAuxODF.closeFile();
-            fileWriterAuxODF = new DataWriterAuxODF(sessionName, _fileName);
-        }
 
         output_fname = fileWriterODF.fname;
         println("OpenBCI_GUI: openNewLogFile: opened ODF output file: " + output_fname); //Print filename of new ODF file to console
@@ -191,10 +212,6 @@ class DataLogger {
             fileWriterODF.closeFile();
         }
         fileWriterODF = null;
-        if (fileWriterAuxODF != null) {
-            fileWriterAuxODF.closeFile();
-        }
-        fileWriterAuxODF = null;
     }
 
     public int getDataLoggerOutputFormat() {
@@ -209,10 +226,6 @@ class DataLogger {
         sessionName = s;
     }
 
-    public final String getSessionName() {
-        return sessionName;
-    }
-    
     public void setBfWriterFolder(String _folderName, String _folderPath) {
         fileWriterBF.setBrainFlowStreamerFolderName(_folderName, _folderPath);
     }
