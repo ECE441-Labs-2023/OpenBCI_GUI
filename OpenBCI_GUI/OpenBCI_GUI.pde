@@ -22,8 +22,7 @@
 import ddf.minim.*;  // To make sound.  Following minim example "frequencyModulation"
 import ddf.minim.ugens.*; // To make sound.  Following minim example "frequencyModulation"
 import java.lang.Math; //for exp, log, sqrt...they seem better than Processing's built-in
-import processing.core.*;
-import processing.data.*;
+import processing.core.PApplet;
 import java.util.*; //for Array.copyOfRange()
 import processing.serial.*; //for serial communication to Arduino/OpenBCI
 import java.awt.event.*; //to allow for event listener on screen resize
@@ -50,20 +49,19 @@ import java.awt.AWTException;
 import netP5.*; // for OSC
 import oscP5.*; // for OSC
 import hypermedia.net.*; //for UDP
-import java.nio.ByteBuffer; //for BDF file writing
+import java.nio.ByteBuffer; //for UDP
 import edu.ucsd.sccn.LSL; //for LSL
 import com.fazecast.jSerialComm.*; //Helps distinguish serial ports on Windows
 import org.apache.commons.lang3.time.StopWatch;
 import http.requests.*;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 
 //------------------------------------------------------------------------
 //                       Global Variables & Instances
 //------------------------------------------------------------------------
 //Used to check GUI version in TopNav.pde and displayed on the splash screen on startup
-String localGUIVersionString = "v5.2.1";
-String localGUIVersionDate = "July 2023";
+String localGUIVersionString = "v5.1.0";
+String localGUIVersionDate = "May 2022";
 String guiLatestVersionGithubAPI = "https://api.github.com/repos/OpenBCI/OpenBCI_GUI/releases/latest";
 String guiLatestReleaseLocation = "https://github.com/OpenBCI/OpenBCI_GUI/releases/latest";
 Boolean guiIsUpToDate;
@@ -97,6 +95,7 @@ final int DATASOURCE_CYTON = 0; // new default, data from serial with Accel data
 final int DATASOURCE_GANGLION = 1;  //looking for signal from OpenBCI board via Serial/COM port, no Aux data
 final int DATASOURCE_PLAYBACKFILE = 2;  //playback from a pre-recorded text file
 final int DATASOURCE_SYNTHETIC = 3;  //Synthetically generated data
+final int DATASOURCE_GALEA = 4;
 final int DATASOURCE_STREAMING = 5;
 public int eegDataSource = -1; //default to none of the options
 final static int NUM_ACCEL_DIMS = 3;
@@ -104,7 +103,7 @@ final static int NUM_ACCEL_DIMS = 3;
 enum BoardProtocol {
     NONE,
     SERIAL,
-    NATIVE_BLE,
+    BLE,
     WIFI,
     BLED112
 }
@@ -140,9 +139,16 @@ int nchan = NCHAN_CYTON; //Normally, 8 or 16.  Choose a smaller number to show f
 
 //define variables related to warnings to the user about whether the EEG data is nearly railed (and, therefore, of dubious quality)
 DataStatus is_railed[];
+// thresholds are pecentages of max possible value
+final double threshold_railed = 99.0;
+final double threshold_railed_warn = 90.0;
 
 //Cyton SD Card setting
 CytonSDMode cyton_sdSetting = CytonSDMode.NO_WRITE;
+
+//Galea Default Settings
+GaleaMode galea_boardSetting = GaleaMode.DEMO; //default mode
+GaleaSR galea_sampleRate = GaleaSR.SR_250;
 
 // Calculate nPointsPerUpdate based on sampling rate and buffer update rate
 // @UPDATE_MILLIS: update the buffer every 40 milliseconds
@@ -300,7 +306,6 @@ public final static String stopButton_pressToStart_txt = "Start Data Stream";
 DirectoryManager directoryManager;
 SessionSettings settings;
 GuiSettings guiSettings;
-DataProcessing dataProcessing;
 FilterSettings filterSettings;
 
 final int navBarHeight = 32;
@@ -419,7 +424,6 @@ void setup() {
     if (isMac()) {
         checkIsMacFullDetail();
     }
-    println("JVM Version: " + System.getProperty("java.version"));
     println("Welcome to the Processing-based OpenBCI GUI!"); //Welcome line.
     println("For more information, please visit: https://docs.openbci.com/Software/OpenBCISoftware/GUIDocs/");
     
@@ -521,9 +525,6 @@ synchronized void draw() {
             initSystem();
             reinitRequested = false;
         }
-        if (systemMode == SYSTEMMODE_POSTINIT) {
-            w_networking.compareAndSetNetworkingFrameLocks();
-        }
     } else if (systemMode == SYSTEMMODE_INTROANIMATION) {
         if (settings.introAnimationInit == 0) {
             settings.introAnimationInit = millis();
@@ -592,7 +593,7 @@ void initSystem() {
             break;
         case DATASOURCE_PLAYBACKFILE:
             if (!playbackData_fname.equals("N/A")) {
-                currentBoard = getDataSourcePlaybackClassFromFile(playbackData_fname);
+                currentBoard = new DataSourcePlayback(playbackData_fname);
                 println("OpenBCI_GUI: Init session using Playback data source");
             } else {
                 if (!sdData_fname.equals("N/A")) {
@@ -608,18 +609,24 @@ void initSystem() {
         case DATASOURCE_GANGLION:
             if (selectedProtocol == BoardProtocol.WIFI) {
                 currentBoard = new BoardGanglionWifi(wifi_ipAddress, selectedSamplingRate);
-            } else if (selectedProtocol == BoardProtocol.BLED112) {
+            }
+            else {
+                // todo[brainflow] temp hardcode
                 String ganglionName = (String)(controlPanel.bleBox.bleList.getItem(controlPanel.bleBox.bleList.activeItem).get("headline"));
                 String ganglionPort = (String)(controlPanel.bleBox.bleList.getItem(controlPanel.bleBox.bleList.activeItem).get("subline"));
                 String ganglionMac = controlPanel.bleBox.bleMACAddrMap.get(ganglionName);
                 println("MAC address for Ganglion is " + ganglionMac);
                 currentBoard = new BoardGanglionBLE(ganglionPort, ganglionMac);
-            } else if (selectedProtocol == BoardProtocol.NATIVE_BLE) {
-                String ganglionName = (String)(controlPanel.bleBox.bleList.getItem(controlPanel.bleBox.bleList.activeItem).get("headline"));
-                String ganglionMac = controlPanel.bleBox.bleMACAddrMap.get(ganglionName);
-                println("MAC address for Ganglion is " + ganglionName);
-                currentBoard = new BoardGanglionNative(ganglionName);
             }
+            break;
+        case DATASOURCE_GALEA:
+            currentBoard = new BoardGalea(
+                    controlPanel.galeaBox.getIPAddress(),
+                    galea_boardSetting,
+                    galea_sampleRate
+                    );
+            // Replace line above with line below to test brainflow synthetic
+            //currentBoard = new BoardBrainFlowSynthetic(16);
             break;
         case DATASOURCE_STREAMING:
             currentBoard = new BoardBrainFlowStreaming(
@@ -709,11 +716,15 @@ void initSystem() {
 
     verbosePrint("OpenBCI_GUI: initSystem: -- Init 4 -- " + millis());
 
-     //don't save default session settings StreamingBoard
-    if (eegDataSource != DATASOURCE_STREAMING) {
+     //don't save default session settings for Galea or StreamingBoard
+    if (eegDataSource != DATASOURCE_GALEA && eegDataSource != DATASOURCE_STREAMING) {
         //Init software settings: create default settings file that is datasource unique
         settings.init();
         settings.initCheckPointFive();
+    } else if (eegDataSource == DATASOURCE_GALEA) {
+        //After TopNav has been instantiated, force Expert mode for Galea by default
+        topNav.configSelector.toggleExpertModeFrontEnd(true);
+        guiSettings.setExpertMode(ExpertModeEnum.ON);
     }
     
     //Make sure topNav buttons draw in the correct spot
@@ -760,7 +771,7 @@ void initCoreDataObjects() {
     data_elec_imp_ohm = new float[nchan];
     is_railed = new DataStatus[nchan];
     for (int i=0; i<nchan; i++) {
-        is_railed[i] = new DataStatus();
+        is_railed[i] = new DataStatus(threshold_railed, threshold_railed_warn);
     }
 
     dataProcessing = new DataProcessing(nchan, currentBoard.getSampleRate());
@@ -1030,7 +1041,7 @@ void drawStartupError() {
     pushStyle();
     background(OPENBCI_DARKBLUE);
     stroke(204);
-    fill(GREY_235);
+    fill(238);
     rect((width - w)/2, (height - h)/2, w, h);
     noStroke();
     fill(217, 4, 4);
